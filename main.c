@@ -14,23 +14,25 @@
  *
  * @defgroup ble_sdk_app_hids_keyboard_main main.c
  * @{
- * @ingroup ble_sdk_app_hids_keyboard
- * @brief HID Keyboard Sample Application main file.
+ * @ingroup ble_sdk_app_hids_keyboard_mouse
+ * @brief HID Keyboard and Mouse Sample Application main file.
  *
  * This file contains is the source code for a sample application using the HID, Battery and Device
- * Information Services for implementing a simple keyboard functionality.
+ * Information Services for implementing simple keyboard and mouse functionality.
  * Pressing Button 0 will send text 'hello' to the connected peer. On receiving output report,
  * it toggles the state of LED 2 on the mother board based on whether or not Caps Lock is on.
  * This application uses the @ref app_scheduler.
  *
- * Also it would accept pairing requests from any peer device.
+ * Also it would accept pairing requests from any peer device. This implementation of the
+ * application will not know whether a connected central is a known device or not.
  */
 
 #include <stdint.h>
 #include <string.h>
 #include "nordic_common.h"
 #include "nrf.h"
-#include "nrf_assert.h"
+#include "nrf_soc.h"
+#include "nrf_sdm.h"
 #include "app_error.h"
 #include "nrf_gpio.h"
 #include "ble.h"
@@ -53,6 +55,7 @@
 #include "fds.h"
 #include "fstorage.h"
 #include "ble_conn_state.h"
+#include "main.h"
 
 #define NRF_LOG_MODULE_NAME "APP"
 #include "nrf_log.h"
@@ -66,8 +69,13 @@
 #define NRF_BLE_MAX_MTU_SIZE            GATT_MTU_SIZE_DEFAULT                       /**< MTU size used in the softdevice enabling and to reply to a BLE_GATTS_EVT_EXCHANGE_MTU_REQUEST event. */
 #endif
 
+//mouse
+#define IS_SRVC_CHANGED_CHARACT_PRESENT 0                                          /**< Include or not the service_changed characteristic. if not enabled, the server's database cannot be changed for the lifetime of the device*/
+//
 #define CENTRAL_LINK_COUNT               0                                          /**< Number of central links used by the application. When changing this number remember to adjust the RAM settings*/
 #define PERIPHERAL_LINK_COUNT            1                                          /**< Number of peripheral links used by the application. When changing this number remember to adjust the RAM settings*/
+
+
 
 #define UART_TX_BUF_SIZE                 256                                        /**< UART TX buffer size. */
 #define UART_RX_BUF_SIZE                 1                                          /**< UART RX buffer size. */
@@ -75,7 +83,15 @@
 #define KEY_PRESS_BUTTON_ID              0                                          /**< Button used as Keyboard key press. */
 #define SHIFT_BUTTON_ID                  1                                          /**< Button used as 'SHIFT' Key. */
 
-#define DEVICE_NAME                      "Nordic_Keyboard"                          /**< Name of device. Will be included in the advertising data. */
+//TODO Make a routine for simulated mouse movements.
+#define MOUSE_TIMER_INTERVAL             APP_TIMER_TICKS(1000, APP_TIMER_PRESCALER) /**< Mouse movement interval (ticks). */
+
+//TODO Bond delete button, see mouse example
+#define BOND_DELETE_ALL_BUTTON_ID       1                                          /**< Button used for deleting all bonded centrals during startup. */
+//
+
+
+#define DEVICE_NAME                      "Nordic_Keyboard_mouse"                          /**< Name of device. Will be included in the advertising data. */
 #define MANUFACTURER_NAME                "NordicSemiconductor"                      /**< Manufacturer. Will be passed to Device Information Service. */
 
 #define APP_TIMER_PRESCALER              0                                          /**< Value of the RTC1 PRESCALER register. */
@@ -102,6 +118,14 @@
 #define SLAVE_LATENCY                    6                                           /**< Slave latency. */
 #define CONN_SUP_TIMEOUT                 MSEC_TO_UNITS(430, UNIT_10_MS)              /**< Connection supervisory timeout (430 ms). */
 
+//Mouse
+// /*lint -emacro(524, MIN_CONN_INTERVAL) // Loss of precision */
+// #define MIN_CONN_INTERVAL               MSEC_TO_UNITS(7.5, UNIT_1_25_MS)            /**< Minimum connection interval (7.5 ms). */
+// #define MAX_CONN_INTERVAL               MSEC_TO_UNITS(15, UNIT_1_25_MS)             /**< Maximum connection interval (15 ms). */
+// #define SLAVE_LATENCY                   20                                          /**< Slave latency. */
+// #define CONN_SUP_TIMEOUT                MSEC_TO_UNITS(3000, UNIT_10_MS)             /**< Connection supervisory timeout (3000 ms). */
+//
+
 #define FIRST_CONN_PARAMS_UPDATE_DELAY   APP_TIMER_TICKS(5000, APP_TIMER_PRESCALER)  /**< Time from initiating event (connect or start of notification) to first time sd_ble_gap_conn_param_update is called (5 seconds). */
 #define NEXT_CONN_PARAMS_UPDATE_DELAY    APP_TIMER_TICKS(30000, APP_TIMER_PRESCALER) /**< Time between each call to sd_ble_gap_conn_param_update after the first call (30 seconds). */
 #define MAX_CONN_PARAMS_UPDATE_COUNT     3                                           /**< Number of attempts before giving up the connection parameter negotiation. */
@@ -121,6 +145,20 @@
 #define OUTPUT_REPORT_BIT_MASK_CAPS_LOCK 0x02                                        /**< CAPS LOCK bit in Output Report (based on 'LED Page (0x08)' of the Universal Serial Bus HID Usage Tables). */
 #define INPUT_REP_REF_ID                 0                                           /**< Id of reference to Keyboard Input Report. */
 #define OUTPUT_REP_REF_ID                0                                           /**< Id of reference to Keyboard Output Report. */
+//Mouse
+#define MOVEMENT_SPEED                  50                                           /**< Number of pixels by which the cursor is moved each time a button is pushed. */
+#define OUTPUT_REPORT_COUNT             4                                           /**< Number of input reports in this application. */
+#define INPUT_REPORT_COUNT              4                                           /**< Number of input reports in this application. */
+#define INPUT_REP_BUTTONS_LEN           3                                           /**< Length of Mouse Input Report containing button data. */
+#define INPUT_REP_MOVEMENT_LEN          3                                           /**< Length of Mouse Input Report containing movement data. */
+#define INPUT_REP_MEDIA_PLAYER_LEN      1                                           /**< Length of Mouse Input Report containing media player data. */
+#define INPUT_REP_BUTTONS_INDEX         0                                           /**< Index of Mouse Input Report containing button data. */
+#define INPUT_REP_MOVEMENT_INDEX        1                                           /**< Index of Mouse Input Report containing movement data. */
+#define INPUT_REP_MPLAYER_INDEX         2                                           /**< Index of Mouse Input Report containing media player data. */
+#define INPUT_REP_REF_BUTTONS_ID        1                                           /**< Id of reference to Mouse Input Report containing button data. */
+#define INPUT_REP_REF_MOVEMENT_ID       2                                           /**< Id of reference to Mouse Input Report containing movement data. */
+#define INPUT_REP_REF_MPLAYER_ID        3                                           /**< Id of reference to Mouse Input Report containing media player data. */
+//
 
 #define APP_FEATURE_NOT_SUPPORTED        BLE_GATT_STATUS_ATTERR_APP_BEGIN + 2        /**< Reply when unsupported features are requested. */
 
@@ -212,6 +250,7 @@ static sensorsim_cfg_t   m_battery_sim_cfg;                 /**< Battery Level s
 static sensorsim_state_t m_battery_sim_state;               /**< Battery Level sensor simulator state. */
 
 APP_TIMER_DEF(m_battery_timer_id);                          /**< Battery timer. */
+APP_TIMER_DEF(m_mouse_timer_id);                            /**< Battery timer. */
 
 static pm_peer_id_t m_peer_id;                              /**< Device reference handle to the current bonded central. */
 static bool         m_caps_on = false;                      /**< Variable to indicate if Caps Lock is turned on. */
@@ -532,6 +571,37 @@ static void battery_level_meas_timeout_handler(void * p_context)
     battery_level_update();
 }
 
+/**@brief Function for handling the Mouse movement timer timeout.
+ *
+ * @details This function will be called each time the mouse timer expires.
+ *
+ * @param[in]   p_context   Pointer used for passing some arbitrary information (context) from the
+ *                          app_start_timer() call to the timeout handler.
+ */
+static void mouse_movement_timeout_handler(void * p_context)
+{
+    UNUSED_PARAMETER(p_context);
+    static uint8_t i = 0;
+    switch(i)
+    {
+        case 0:
+            mouse_movement_send(MOVEMENT_SPEED, 0);
+            break;
+        case 1:
+            mouse_movement_send(0, MOVEMENT_SPEED);
+            break;
+        case 2:
+            mouse_movement_send(-MOVEMENT_SPEED, 0);
+            break;
+        case 3:
+            mouse_movement_send(0, -MOVEMENT_SPEED);
+            break;
+        default:
+            break;
+    }
+    i++;
+    if(i > 3)i = 0;
+}
 
 /**@brief Function for the Timer initialization.
  *
@@ -548,6 +618,12 @@ static void timers_init(void)
     err_code = app_timer_create(&m_battery_timer_id,
                                 APP_TIMER_MODE_REPEATED,
                                 battery_level_meas_timeout_handler);
+    APP_ERROR_CHECK(err_code);
+
+    // Create mouse timer.
+    err_code = app_timer_create(&m_mouse_timer_id,
+                                APP_TIMER_MODE_REPEATED,
+                                mouse_movement_timeout_handler);
     APP_ERROR_CHECK(err_code);
 }
 
@@ -570,7 +646,7 @@ static void gap_params_init(void)
                                           strlen(DEVICE_NAME));
     APP_ERROR_CHECK(err_code);
 
-    err_code = sd_ble_gap_appearance_set(BLE_APPEARANCE_HID_KEYBOARD);
+    err_code = sd_ble_gap_appearance_set(BLE_APPEARANCE_GENERIC_HID);
     APP_ERROR_CHECK(err_code);
 
     memset(&gap_conn_params, 0, sizeof(gap_conn_params));
@@ -642,8 +718,8 @@ static void hids_init(void)
 {
     uint32_t                   err_code;
     ble_hids_init_t            hids_init_obj;
-    ble_hids_inp_rep_init_t    input_report_array[1];
-    ble_hids_inp_rep_init_t  * p_input_report;
+    ble_hids_inp_rep_init_t    input_report_array[INPUT_REPORT_COUNT];
+    ble_hids_inp_rep_init_t *  p_input_report;
     ble_hids_outp_rep_init_t   output_report_array[1];
     ble_hids_outp_rep_init_t * p_output_report;
     uint8_t                    hid_info_flags;
@@ -653,9 +729,86 @@ static void hids_init(void)
 
     static uint8_t report_map_data[] =
     {
+        0x0B, 0x00, 0x00, // Usage (Keyboard)
         0x05, 0x01,       // Usage Page (Generic Desktop)
-        0x09, 0x06,       // Usage (Keyboard)
         0xA1, 0x01,       // Collection (Application)
+        //Mouse
+        // Report ID 1: Mouse buttons + scroll/pan
+        0x85, 0x01,       // Report Id 1
+        0x09, 0x01,       // Usage (Pointer)
+        0xA1, 0x00,       // Collection (Physical)
+        0x95, 0x05,       // Report Count (3)
+        0x75, 0x01,       // Report Size (1)
+        0x05, 0x09,       // Usage Page (Buttons)
+        0x19, 0x01,       // Usage Minimum (01)
+        0x29, 0x05,       // Usage Maximum (05)
+        0x15, 0x00,       // Logical Minimum (0)
+        0x25, 0x01,       // Logical Maximum (1)
+        0x81, 0x02,       // Input (Data, Variable, Absolute)
+        0x95, 0x01,       // Report Count (1)
+        0x75, 0x03,       // Report Size (3)
+        0x81, 0x01,       // Input (Constant) for padding
+        0x75, 0x08,       // Report Size (8)
+        0x95, 0x01,       // Report Count (1)
+        0x05, 0x01,       // Usage Page (Generic Desktop)
+        0x09, 0x38,       // Usage (Wheel)
+        0x15, 0x81,       // Logical Minimum (-127)
+        0x25, 0x7F,       // Logical Maximum (127)
+        0x81, 0x06,       // Input (Data, Variable, Relative)
+        0x05, 0x0C,       // Usage Page (Consumer)
+        0x0A, 0x38, 0x02, // Usage (AC Pan)
+        0x95, 0x01,       // Report Count (1)
+        0x81, 0x06,       // Input (Data,Value,Relative,Bit Field)
+        0xC0,             // End Collection (Physical)
+
+        // Report ID 2: Mouse motion
+        0x85, 0x02,       // Report Id 2
+        0x09, 0x01,       // Usage (Pointer)
+        0xA1, 0x00,       // Collection (Physical)
+        0x75, 0x0C,       // Report Size (12)
+        0x95, 0x02,       // Report Count (2)
+        0x05, 0x01,       // Usage Page (Generic Desktop)
+        0x09, 0x30,       // Usage (X)
+        0x09, 0x31,       // Usage (Y)
+        0x16, 0x01, 0xF8, // Logical maximum (2047)
+        0x26, 0xFF, 0x07, // Logical minimum (-2047)
+        0x81, 0x06,       // Input (Data, Variable, Relative)
+        0xC0,             // End Collection (Physical)
+        0xC0,             // End Collection (Application)
+
+        // Report ID 3: Advanced buttons
+        0x05, 0x0C,       // Usage Page (Consumer)
+        0x09, 0x01,       // Usage (Consumer Control)
+        0xA1, 0x01,       // Collection (Application)
+        0x85, 0x03,       // Report Id (3)
+        0x15, 0x00,       // Logical minimum (0)
+        0x25, 0x01,       // Logical maximum (1)
+        0x75, 0x01,       // Report Size (1)
+        0x95, 0x01,       // Report Count (1)
+
+        0x09, 0xCD,       // Usage (Play/Pause)
+        0x81, 0x06,       // Input (Data,Value,Relative,Bit Field)
+        0x0A, 0x83, 0x01, // Usage (AL Consumer Control Configuration)
+        0x81, 0x06,       // Input (Data,Value,Relative,Bit Field)
+        0x09, 0xB5,       // Usage (Scan Next Track)
+        0x81, 0x06,       // Input (Data,Value,Relative,Bit Field)
+        0x09, 0xB6,       // Usage (Scan Previous Track)
+        0x81, 0x06,       // Input (Data,Value,Relative,Bit Field)
+
+        0x09, 0xEA,       // Usage (Volume Down)
+        0x81, 0x06,       // Input (Data,Value,Relative,Bit Field)
+        0x09, 0xE9,       // Usage (Volume Up)
+        0x81, 0x06,       // Input (Data,Value,Relative,Bit Field)
+        0x0A, 0x25, 0x02, // Usage (AC Forward)
+        0x81, 0x06,       // Input (Data,Value,Relative,Bit Field)
+        0x0A, 0x24, 0x02, // Usage (AC Back)
+        0x81, 0x06,       // Input (Data,Value,Relative,Bit Field)
+        //
+
+        // Report ID 4: Keyboard
+        0x85, 0x04,       // Report Id (4)
+        0x0B, 0x06, 0x00, // Usage (Keyboard)
+        0xA1, 0x00,       // Collection (Physical)
         0x05, 0x07,       // Usage Page (Key Codes)
         0x19, 0xe0,       // Usage Minimum (224)
         0x29, 0xe7,       // Usage Maximum (231)
@@ -716,6 +869,35 @@ static void hids_init(void)
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_output_report->security_mode.read_perm);
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_output_report->security_mode.write_perm);
 
+    //Mouse
+    p_input_report                      = &input_report_array[INPUT_REP_BUTTONS_INDEX];
+    p_input_report->max_len             = INPUT_REP_BUTTONS_LEN;
+    p_input_report->rep_ref.report_id   = INPUT_REP_REF_BUTTONS_ID;
+    p_input_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_INPUT;
+
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.cccd_write_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.read_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.write_perm);
+
+    p_input_report                      = &input_report_array[INPUT_REP_MOVEMENT_INDEX];
+    p_input_report->max_len             = INPUT_REP_MOVEMENT_LEN;
+    p_input_report->rep_ref.report_id   = INPUT_REP_REF_MOVEMENT_ID;
+    p_input_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_INPUT;
+
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.cccd_write_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.read_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.write_perm);
+
+    p_input_report                      = &input_report_array[INPUT_REP_MPLAYER_INDEX];
+    p_input_report->max_len             = INPUT_REP_MEDIA_PLAYER_LEN;
+    p_input_report->rep_ref.report_id   = INPUT_REP_REF_MPLAYER_ID;
+    p_input_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_INPUT;
+
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.cccd_write_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.read_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.write_perm);
+    //
+
     hid_info_flags = HID_INFO_FLAG_REMOTE_WAKE_MSK | HID_INFO_FLAG_NORMALLY_CONNECTABLE_MSK;
 
     memset(&hids_init_obj, 0, sizeof(hids_init_obj));
@@ -723,10 +905,10 @@ static void hids_init(void)
     hids_init_obj.evt_handler                    = on_hids_evt;
     hids_init_obj.error_handler                  = service_error_handler;
     hids_init_obj.is_kb                          = true;
-    hids_init_obj.is_mouse                       = false;
-    hids_init_obj.inp_rep_count                  = 1;
+    hids_init_obj.is_mouse                       = true;
+    hids_init_obj.inp_rep_count                  = INPUT_REPORT_COUNT;
     hids_init_obj.p_inp_rep_array                = input_report_array;
-    hids_init_obj.outp_rep_count                 = 1;
+    hids_init_obj.outp_rep_count                 = OUTPUT_REPORT_COUNT;
     hids_init_obj.p_outp_rep_array               = output_report_array;
     hids_init_obj.feature_rep_count              = 0;
     hids_init_obj.p_feature_rep_array            = NULL;
@@ -749,6 +931,14 @@ static void hids_init(void)
     BLE_GAP_CONN_SEC_MODE_SET_NO_ACCESS(&hids_init_obj.security_mode_boot_kb_inp_rep.write_perm);
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_boot_kb_outp_rep.read_perm);
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_boot_kb_outp_rep.write_perm);
+    //Mouse
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(
+        &hids_init_obj.security_mode_boot_mouse_inp_rep.cccd_write_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(
+        &hids_init_obj.security_mode_boot_mouse_inp_rep.read_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(
+        &hids_init_obj.security_mode_boot_mouse_inp_rep.write_perm);
+    //
 
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_protocol.read_perm);
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_protocol.write_perm);
@@ -823,6 +1013,9 @@ static void timers_start(void)
     uint32_t err_code;
 
     err_code = app_timer_start(m_battery_timer_id, BATTERY_LEVEL_MEAS_INTERVAL, NULL);
+    APP_ERROR_CHECK(err_code);
+
+    err_code = app_timer_start(m_mouse_timer_id, MOUSE_TIMER_INTERVAL, NULL);
     APP_ERROR_CHECK(err_code);
 }
 
@@ -1564,6 +1757,57 @@ static void bsp_event_handler(bsp_event_t event)
 
         default:
             break;
+    }
+}
+
+
+/**@brief Function for sending a Mouse Movement.
+ *
+ * @param[in]   x_delta   Horizontal movement.
+ * @param[in]   y_delta   Vertical movement.
+ */
+static void mouse_movement_send(int16_t x_delta, int16_t y_delta)
+{
+    uint32_t err_code;
+
+    if (m_in_boot_mode)
+    {
+        x_delta = MIN(x_delta, 0x00ff);
+        y_delta = MIN(y_delta, 0x00ff);
+
+        err_code = ble_hids_boot_mouse_inp_rep_send(&m_hids,
+                                                    0x00,
+                                                    (int8_t)x_delta,
+                                                    (int8_t)y_delta,
+                                                    0,
+                                                    NULL);
+    }
+    else
+    {
+        uint8_t buffer[INPUT_REP_MOVEMENT_LEN];
+
+        APP_ERROR_CHECK_BOOL(INPUT_REP_MOVEMENT_LEN == 3);
+
+        x_delta = MIN(x_delta, 0x0fff);
+        y_delta = MIN(y_delta, 0x0fff);
+
+        buffer[0] = x_delta & 0x00ff;
+        buffer[1] = ((y_delta & 0x000f) << 4) | ((x_delta & 0x0f00) >> 8);
+        buffer[2] = (y_delta & 0x0ff0) >> 4;
+
+        err_code = ble_hids_inp_rep_send(&m_hids,
+                                         INPUT_REP_MOVEMENT_INDEX,
+                                         INPUT_REP_MOVEMENT_LEN,
+                                         buffer);
+    }
+
+    if ((err_code != NRF_SUCCESS) &&
+        (err_code != NRF_ERROR_INVALID_STATE) &&
+        (err_code != BLE_ERROR_NO_TX_PACKETS) &&
+        (err_code != BLE_ERROR_GATTS_SYS_ATTR_MISSING)
+       )
+    {
+        APP_ERROR_HANDLER(err_code);
     }
 }
 

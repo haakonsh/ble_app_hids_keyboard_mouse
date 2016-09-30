@@ -12,7 +12,7 @@
 
 /** @file
  *
- * @defgroup ble_sdk_app_hids_keyboard_main main.c
+ * @defgroup ble_sdk_app_hids_keyboard_mouse_main main.c
  * @{
  * @ingroup ble_sdk_app_hids_keyboard_mouse
  * @brief HID Keyboard and Mouse Sample Application main file.
@@ -83,7 +83,6 @@
 #define KEY_PRESS_BUTTON_ID              0                                          /**< Button used as Keyboard key press. */
 #define SHIFT_BUTTON_ID                  1                                          /**< Button used as 'SHIFT' Key. */
 
-//TODO Make a routine for simulated mouse movements.
 #define MOUSE_TIMER_INTERVAL             APP_TIMER_TICKS(1000, APP_TIMER_PRESCALER) /**< Mouse movement interval (ticks). */
 
 //TODO Bond delete button, see mouse example
@@ -139,25 +138,27 @@
 #define SEC_PARAM_MIN_KEY_SIZE           7                                           /**< Minimum encryption key size. */
 #define SEC_PARAM_MAX_KEY_SIZE           16                                          /**< Maximum encryption key size. */
 
+// HID Reports
+#define OUTPUT_REPORT_COUNT              1                                           /**< Number of input reports in this application. */
 #define OUTPUT_REPORT_INDEX              0                                           /**< Index of Output Report. */
 #define OUTPUT_REPORT_MAX_LEN            1                                           /**< Maximum length of Output Report. */
-#define INPUT_REPORT_KEYS_INDEX          0                                           /**< Index of Input Report. */
 #define OUTPUT_REPORT_BIT_MASK_CAPS_LOCK 0x02                                        /**< CAPS LOCK bit in Output Report (based on 'LED Page (0x08)' of the Universal Serial Bus HID Usage Tables). */
-#define INPUT_REP_REF_ID                 0                                           /**< Id of reference to Keyboard Input Report. */
-#define OUTPUT_REP_REF_ID                0                                           /**< Id of reference to Keyboard Output Report. */
+#define OUTPUT_REP_REF_KEYBOARD_ID       0                                           /**< Id of reference to Keyboard Output Report. */
 //Mouse
-#define MOVEMENT_SPEED                  50                                           /**< Number of pixels by which the cursor is moved each time a button is pushed. */
-#define OUTPUT_REPORT_COUNT             4                                           /**< Number of input reports in this application. */
 #define INPUT_REPORT_COUNT              4                                           /**< Number of input reports in this application. */
+#define INPUT_REPORT_KEYS_INDEX         0                                           /**< Index of Keyboard Input Report containing key data. */
+#define INPUT_REP_BUTTONS_INDEX         1                                           /**< Index of Mouse Input Report containing button data. */
+#define INPUT_REP_MOVEMENT_INDEX        2                                           /**< Index of Mouse Input Report containing movement data. */
+#define INPUT_REP_MPLAYER_INDEX         3                                           /**< Index of Mouse Input Report containing media player data. */
 #define INPUT_REP_BUTTONS_LEN           3                                           /**< Length of Mouse Input Report containing button data. */
 #define INPUT_REP_MOVEMENT_LEN          3                                           /**< Length of Mouse Input Report containing movement data. */
 #define INPUT_REP_MEDIA_PLAYER_LEN      1                                           /**< Length of Mouse Input Report containing media player data. */
-#define INPUT_REP_BUTTONS_INDEX         0                                           /**< Index of Mouse Input Report containing button data. */
-#define INPUT_REP_MOVEMENT_INDEX        1                                           /**< Index of Mouse Input Report containing movement data. */
-#define INPUT_REP_MPLAYER_INDEX         2                                           /**< Index of Mouse Input Report containing media player data. */
+#define INPUT_REP_REF_KEYBOARD_ID       0                                           /**< Id of reference to Keyboard Input Report. */
 #define INPUT_REP_REF_BUTTONS_ID        1                                           /**< Id of reference to Mouse Input Report containing button data. */
 #define INPUT_REP_REF_MOVEMENT_ID       2                                           /**< Id of reference to Mouse Input Report containing movement data. */
 #define INPUT_REP_REF_MPLAYER_ID        3                                           /**< Id of reference to Mouse Input Report containing media player data. */
+
+#define MOVEMENT_SPEED                  50                                           /**< Number of pixels by which the cursor is moved each time a button is pushed. */
 //
 
 #define APP_FEATURE_NOT_SUPPORTED        BLE_GATT_STATUS_ATTERR_APP_BEGIN + 2        /**< Reply when unsupported features are requested. */
@@ -180,6 +181,10 @@
 
 #define MAX_KEYS_IN_ONE_REPORT           (INPUT_REPORT_KEYS_MAX_LEN - SCAN_CODE_POS) /**< Maximum number of key presses that can be sent in one Input Report. */
 
+static ble_hids_t m_hids;                                                                         /**< Structure used to identify the HID service. */
+static ble_bas_t  m_bas;                                                                          /**< Structure used to identify the battery service. */
+static bool       m_in_boot_mode = false;                                                         /**< Current protocol mode. */
+static uint16_t   m_conn_handle  = BLE_CONN_HANDLE_INVALID;
 
 /**Buffer queue access macros
  *
@@ -504,6 +509,8 @@ static void pm_evt_handler(pm_evt_t const * p_evt)
             break;
 
         case PM_EVT_SERVICE_CHANGED_IND_SENT:
+            break; // PM_EVT_SERVICE_CHANGED_IND_SENT
+
         case PM_EVT_SERVICE_CHANGED_IND_CONFIRMED:
             break;
 
@@ -720,17 +727,19 @@ static void hids_init(void)
     ble_hids_init_t            hids_init_obj;
     ble_hids_inp_rep_init_t    input_report_array[INPUT_REPORT_COUNT];
     ble_hids_inp_rep_init_t *  p_input_report;
-    ble_hids_outp_rep_init_t   output_report_array[1];
+    ble_hids_outp_rep_init_t   output_report_array[OUTPUT_REPORT_COUNT];
     ble_hids_outp_rep_init_t * p_output_report;
     uint8_t                    hid_info_flags;
 
-    memset((void *)input_report_array, 0, sizeof(ble_hids_inp_rep_init_t));
-    memset((void *)output_report_array, 0, sizeof(ble_hids_outp_rep_init_t));
+    // memset((void *)input_report_array, 0, sizeof(ble_hids_inp_rep_init_t));
+    // memset((void *)output_report_array, 0, sizeof(ble_hids_outp_rep_init_t));
+    memset(output_report_array, 0, sizeof(output_report_array));
+    memset(input_report_array, 0, sizeof(input_report_array));
 
     static uint8_t report_map_data[] =
     {
-        0x0B, 0x00, 0x00, // Usage (Keyboard)
         0x05, 0x01,       // Usage Page (Generic Desktop)
+        0x0B, 0x00, 0x00, // Usage (Keyboard)
         0xA1, 0x01,       // Collection (Application)
         //Mouse
         // Report ID 1: Mouse buttons + scroll/pan
@@ -852,24 +861,22 @@ static void hids_init(void)
     };
 
     // Initialize HID Service
+    p_output_report                      = &output_report_array[OUTPUT_REPORT_INDEX];
+    p_output_report->max_len             = OUTPUT_REPORT_MAX_LEN;
+    p_output_report->rep_ref.report_id   = OUTPUT_REP_REF_KEYBOARD_ID;
+    p_output_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_OUTPUT;
+
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_output_report->security_mode.read_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_output_report->security_mode.write_perm);
     p_input_report                      = &input_report_array[INPUT_REPORT_KEYS_INDEX];
     p_input_report->max_len             = INPUT_REPORT_KEYS_MAX_LEN;
-    p_input_report->rep_ref.report_id   = INPUT_REP_REF_ID;
+    p_input_report->rep_ref.report_id   = INPUT_REP_REF_KEYBOARD_ID;
     p_input_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_INPUT;
 
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.cccd_write_perm);
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.read_perm);
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.write_perm);
 
-    p_output_report                      = &output_report_array[OUTPUT_REPORT_INDEX];
-    p_output_report->max_len             = OUTPUT_REPORT_MAX_LEN;
-    p_output_report->rep_ref.report_id   = OUTPUT_REP_REF_ID;
-    p_output_report->rep_ref.report_type = BLE_HIDS_REP_TYPE_OUTPUT;
-
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_output_report->security_mode.read_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_output_report->security_mode.write_perm);
-
-    //Mouse
     p_input_report                      = &input_report_array[INPUT_REP_BUTTONS_INDEX];
     p_input_report->max_len             = INPUT_REP_BUTTONS_LEN;
     p_input_report->rep_ref.report_id   = INPUT_REP_REF_BUTTONS_ID;
@@ -896,7 +903,7 @@ static void hids_init(void)
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.cccd_write_perm);
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.read_perm);
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&p_input_report->security_mode.write_perm);
-    //
+
 
     hid_info_flags = HID_INFO_FLAG_REMOTE_WAKE_MSK | HID_INFO_FLAG_NORMALLY_CONNECTABLE_MSK;
 
@@ -904,8 +911,8 @@ static void hids_init(void)
 
     hids_init_obj.evt_handler                    = on_hids_evt;
     hids_init_obj.error_handler                  = service_error_handler;
-    hids_init_obj.is_kb                          = true;
-    hids_init_obj.is_mouse                       = true;
+    hids_init_obj.is_kb                          = false;
+    hids_init_obj.is_mouse                       = false;
     hids_init_obj.inp_rep_count                  = INPUT_REPORT_COUNT;
     hids_init_obj.p_inp_rep_array                = input_report_array;
     hids_init_obj.outp_rep_count                 = OUTPUT_REPORT_COUNT;
@@ -920,24 +927,21 @@ static void hids_init(void)
     hids_init_obj.included_services_count        = 0;
     hids_init_obj.p_included_services_array      = NULL;
 
+    //TODO Fix security
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.rep_map.security_mode.read_perm);
     BLE_GAP_CONN_SEC_MODE_SET_NO_ACCESS(&hids_init_obj.rep_map.security_mode.write_perm);
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.hid_information.security_mode.read_perm);
     BLE_GAP_CONN_SEC_MODE_SET_NO_ACCESS(&hids_init_obj.hid_information.security_mode.write_perm);
 
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(
-        &hids_init_obj.security_mode_boot_kb_inp_rep.cccd_write_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_boot_kb_inp_rep.cccd_write_perm);
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_boot_kb_inp_rep.read_perm);
     BLE_GAP_CONN_SEC_MODE_SET_NO_ACCESS(&hids_init_obj.security_mode_boot_kb_inp_rep.write_perm);
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_boot_kb_outp_rep.read_perm);
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_boot_kb_outp_rep.write_perm);
     //Mouse
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(
-        &hids_init_obj.security_mode_boot_mouse_inp_rep.cccd_write_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(
-        &hids_init_obj.security_mode_boot_mouse_inp_rep.read_perm);
-    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(
-        &hids_init_obj.security_mode_boot_mouse_inp_rep.write_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_boot_mouse_inp_rep.cccd_write_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_boot_mouse_inp_rep.read_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_boot_mouse_inp_rep.write_perm);
     //
 
     BLE_GAP_CONN_SEC_MODE_SET_ENC_NO_MITM(&hids_init_obj.security_mode_protocol.read_perm);
@@ -1450,6 +1454,8 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt)
             break; //BLE_ADV_EVT_SLOW_WHITELIST
 
         case BLE_ADV_EVT_IDLE:
+            err_code = bsp_indication_set(BSP_INDICATE_IDLE);
+            APP_ERROR_CHECK(err_code);
             sleep_mode_enter();
             break; //BLE_ADV_EVT_IDLE
 
